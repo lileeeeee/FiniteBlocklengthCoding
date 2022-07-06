@@ -1,0 +1,15 @@
+This version of KRnet has been reported in papers:
+1. K. Tang, X. Wan and Q. Liao, Deep density estimation via invertible block-triangular mapping, Theoretical & Applied Mechanics Letters, 10 (2020), 000-5.
+2. K. Tang, X. Wan and Q. Liao, Adaptive deep density approximation for Fokker-Planck equations, Journal of Computational Physics, 457 (2022), 111080.
+
+The code is based on TensorFlow 2. The main function is defined in train.py. Other files, including BR_data.py, BR_layers.py and BR_model.py, are located in the directory BR_lib. 
+The train.py is ready to run, which can be used to approximate the distribution of data given in the directory ./dataset_for_training. The data is generated according to a Gaussian 
+mixture model, see the function get_data() in train.py.
+
+The model KRnet is defined in BR_model.py; All bijection layers are defined in BR_layers.py; The dataflow and some related utilities are included in BR_data.py.
+
+In train.py, the rotation layers and nonlinear linear layers are switched off by default. They may be used to further improve the model after Krnet is trained.
+
+All hyperparameters for KRnet and training process can be found at the end of train.py.
+
+In the directory ./post_process, the file comparison.py can be used to plot the training set, the samples from KRnet and the prior distribution after the training is done.  
