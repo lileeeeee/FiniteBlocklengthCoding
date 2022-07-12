@@ -1,4 +1,7 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
+
+import argparse
+
 import tensorflow as tf
 from tensorflow.keras import layers
 import numpy as np
@@ -22,23 +25,20 @@ if gpus:
     # Visible devices must be set before GPUs have been initialized
     print(e)
 
+
+
 def main(args):
     def get_data(n_train, n_dim):
-        w = np.ones((n_train,1), dtype='float32')
-        
         # 10d of Gaussian
-        # x = BR_data.gen_nd_Gaussian_w_hole(10, n_train, 1.0)
-        # np.savetxt('./dataset_for_training/Gaussian_10d_mixture.dat', x)
+        x = BR_data.gen_nd_Gaussian(10, n_train)
+        np.savetxt('./dataset_for_training/Gaussian_10d_mixture.dat', x)
         x = np.loadtxt('./dataset_for_training/Gaussian_10d_mixture.dat').astype(np.float32)[:n_train,:]
-        return x,w
-
-    #differential entropy of the 2d Gaussian mixture distribution
-    #ce = 4.59343477271186
-
-    x,w = get_data(args.n_train, args.n_dim)
+        return x
+    print("------ Loading data ------")
+    x = get_data(args.n_train, args.n_dim)
 
 
-    data_flow = BR_data.dataflow(x, buffersize=args.n_train, batchsize=args.batch_size, y=w)
+    data_flow = BR_data.dataflow(x, buffersize=args.n_train, batchsize=args.batch_size)
     train_dataset = data_flow.get_shuffled_batched_dataset()
 
     # create the model
@@ -58,32 +58,41 @@ def main(args):
     # define discriminator
     def make_discriminator(input_shape):
         return tf.keras.Sequential([
-            layers.Dense(256, activation=None, input_shape=input_shape),
-            layers.LeakyReLU(0.2),
-            layers.Dense(256, activation=None),
-            layers.LeakyReLU(0.2),
+            layers.Dense(128, activation=None, input_shape=input_shape),
+            layers.LeakyReLU(0.8),
+            layers.Dense(32, activation=None),
+            layers.LeakyReLU(0.8),
             layers.Dense(1, activation='sigmoid')
         ])
 
     # define generator
     def make_generator(input_shape):
         return tf.keras.Sequential([
-            layers.Dense(256, activation='relu', input_shape=input_shape),
-            layers.Dense(256, activation='relu'),
+            layers.Dense(32, activation='relu', input_shape=input_shape),
+            layers.Dense(128, activation='relu'),
             layers.Dense(10)
         ])
 
     # call model one to complete the building process
+    print("------ Initializing data ------")
     x_init = data_flow.get_n_batch_from_shuffled_batched_dataset(1)
     kr_model = create_kr_model()
     kr_model(x_init)
-    Generator = make_generator(args.n_dim)
-    Discriminator = make_discriminator(args.n_dim + 1)
+    Generator = make_generator((args.n_dim,))
+    Discriminator = make_discriminator((args.n_dim + 1,))
+
+    #trainable parameters
+    kr_para = kr_model.trainable_variables
+    g_para = Generator.trainable_variables
+    d_para = Discriminator.trainable_variables
 
     # define loss function
-    def get_kr_loss(x, w):
-        pdf = kr_model(x)
-        loss = -tf.reduce_mean(pdf*w)
+    def get_kr_loss(x):
+        y = kr_model(x)[0]
+        y = inv_sphere_proj(y, args.n_dim, y.shape[0], args.radius)
+        y = Discriminator(y)
+        w = tf.ones((x.shape[0],1), tf.float32)
+        loss = -tf.reduce_mean(y * w)
 
         reg = tf.constant(0.0)
 
@@ -93,19 +102,22 @@ def main(args):
 
 
     def get_d_loss(real, fake):
-        return -tf.reduce_mean(tf.math.log(real + 1e-10) + tf.math.log(1. - fake + 1e-10))
+        return -tf.reduce_mean(real + 1. - fake)
 
     def get_g_loss(fake):
-        return -tf.reduce_mean(tf.math.log(fake + 1e-10))
+        return -tf.reduce_mean(1. - fake)
 
     def inv_sphere_proj(raw_point, n_dim, n_train, radius):
         """inverse stereographic projection"""
-        res = np.zeros((n_train, n_dim + 1), dtype='float32')
-        s_sq = np.linalg.norm(raw_point, axis=1) * np.linalg.norm(raw_point, axis=1)
+        res = []
         for i in range(n_train):
+            tmp = []
+            normal = tf.sqrt(tf.reduce_sum(raw_point[i]))
             for j in range(n_dim):
-                res[i][j] = (2 * raw_point[i][j] / (s_sq[i] + 1) * radius).sum()
-            res[i][-1] = ((s_sq[i] - 1) / (s_sq[i] + 1) * radius).sum()
+                tmp.append(tf.reduce_sum((2 * raw_point[i][j] / (normal + 1) * radius)))
+            tmp.append(tf.reduce_sum(((normal - 1) / (normal + 1) * radius)))
+            res.append(tf.stack(tmp))
+        res = tf.stack(res)
         return res
 
 
@@ -118,81 +130,60 @@ def main(args):
     g_optim = tf.keras.optimizers.Adam(learning_rate=args.g_lr)
     d_optim = tf.keras.optimizers.Adam(learning_rate=args.d_lr)
 
-    # check point and initialization
-    ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=kr_optim, net=kr_model)
-    manager=tf.train.CheckpointManager(ckpt, args.ckpts_dir, max_to_keep=3)
-    ckpt.restore(manager.latest_checkpoint)
-    if manager.latest_checkpoint:
-        print("Restored from {}".format(manager.latest_checkpoint))
-    else:
-        print(" ------ Initializing from scratch ------")
-        m = 1 # the number minibatches used for data initialization
-        x_init = data_flow.get_n_batch_from_shuffled_batched_dataset(m)
-        #if args.rotation:
-        #    pdf_model.WLU_data_initialization()
-        kr_model.actnorm_data_initialization()
-        kr_model(x_init)
     # summary
     summary_writer = tf.summary.create_file_writer(args.summary_dir)
 
     # prepare one training iteration step
     @tf.function
-    def kr_train_step(inputs, vars):
-        x_t, w_t = inputs
+    def kr_train_step(inputs, kr_para, g_para, d_para):
+        x_t = inputs
         with tf.GradientTape() as kr_tape:
-            x_t = kr_model(x_t)
-            x_t = inv_sphere_proj(x_t, args.n_dim, x_t.shape()[0], args.radius)
-            sample_gaussian_vector = BR_data.gen_nd_Gaussian(args.n_dim + 1, x_t.shape()[0])
-            y_t = x_t + sample_gaussian_vector
-
-            g_l, d_l = 0.0, 0.0
+            y_t = kr_model(x_t)[0]
+            y_t = inv_sphere_proj(y_t, args.n_dim, x_t.shape[0], args.radius)
+            sample_gaussian_vector = BR_data.gen_nd_Gaussian(args.n_dim + 1, y_t.shape[0])
+            y_t = y_t + sample_gaussian_vector
             for i in range(args.g_epoch):
-                g_l, d_l = gan_train_step(y_t)
+                g_l, d_l = gan_train_step(y_t, g_para, d_para)
 
-            loss, reg = get_kr_loss(y_t, w_t)
+            loss, reg = get_kr_loss(x_t)
+        print("------updating krnet------")
+        grads = kr_tape.gradient(loss, kr_para)
 
-        grads = kr_tape.gradient(loss, vars)
-        kr_optim.apply_gradients(zip(grads, vars))
+        kr_optim.apply_gradients(zip(grads, kr_para))
 
         return loss, g_l, d_l, reg
 
+    @tf.function
+    def gan_train_step(real_inputs, g_para, d_para):
+        print("------gan_step_starts------")
+        z = BR_data.gen_nd_Gaussian(args.n_dim, real_inputs.shape[0])
+        with tf.GradientTape() as g_tape:
+            fake_inputs = Generator(z, training=True)
+            fake_inputs = inv_sphere_proj(fake_inputs, args.n_dim, fake_inputs.shape[0], args.radius)
+            sample_gaussian_vector = BR_data.gen_nd_Gaussian(args.n_dim + 1, fake_inputs.shape[0])
+            fake_inputs = fake_inputs + sample_gaussian_vector
+            with tf.GradientTape() as d_tape:
+                for i in range(args.d_epoch):
+                    print("------dis_step%s------"%(i + 1))
+                    fake_ans = Discriminator(fake_inputs, training=True)
+                    real_ans = Discriminator(real_inputs, training=True)
+                    d_loss = get_d_loss(real_ans, fake_ans)
+                    d_grad = d_tape.gradient(d_loss, d_para)
+                    d_optim.apply_gradients(zip(d_grad, d_para))
 
-    def gan_train_step(real_inputs):
-        z = BR_data.gen_nd_Gaussian(real_inputs.shape()[1], real_inputs.shape()[0])
-        with tf.GradientTape() as g_tape, tf.GradientTape() as d_tape:
-            fake_input = Generator(z, training = True)
-            fake_input = inv_sphere_proj(fake_input, args.n_dim, fake_input.shape()[0], args.radius)
-            sample_gaussian_vector = BR_data.gen_nd_Gaussian(args.n_dim + 1, fake_input.shape()[0])
-            fake_input = fake_input + sample_gaussian_vector
 
-
-            for i in range(args.d_epoch):
-                fake_ans = Discriminator(fake_input, training = True)
-                real_ans = Discriminator(real_inputs, training = True)
-                d_loss = get_d_loss(real_ans, fake_ans)
-                d_grad = d_tape.gradient(d_loss, Discriminator.trainable_variables)
-                d_optim.apply_gradients(zip(d_grad, Generator.trainable_variables))
-
-        g_loss = get_g_loss(fake_input)
-        g_grad = g_tape.gradient(g_loss, Generator.trainable_variables)
-        g_optim.apply_gradients(zip(g_grad, Generator.trainable_variables))
+            g_loss = get_g_loss(fake_inputs)
+            g_grad = g_tape.gradient(g_loss, g_para)
+            g_optim.apply_gradients(zip(g_grad, g_para))
+        print(g_loss, d_loss)
         return g_loss, d_loss
-
-    # used for the computation of KL divergence
-    # n_valid = 320000
-    # y = np.loadtxt('./dataset_for_training/Logistic_8d_w_2d_holes_valid.dat').astype(np.float32)[:n_valid,:]
-    # y, _ = BR_data.gen_xd_Logistic_w_2d_hole(args.n_dim, n_valid, 2.0, 3.0, np.pi/4.0, 7.6)
-
-    loss_vs_epoch=[]
-    KL_vs_epoch=[]
 
     n_epochs = args.n_epochs
     with summary_writer.as_default():
         # iterate over epochs
-        iteration = 0
+        print("---------------start-training-----------------")
         for i in range(1,n_epochs+1):
             # freeze the rotation layers after a certain number of epochs
-            g_vars = kr_model.trainable_weights
 
             #if args.rotation == True and i >= args.rotation_epochs:
             #    g_vars = [var for var in g_vars if not 'rotation' in var.name]
@@ -200,86 +191,48 @@ def main(args):
             start_time = time.time()
             # iterate over the batches of the dataset
             for step, train_batch in enumerate(train_dataset):
-                loss, reg = kr_train_step((train_batch[0], train_batch[1]), g_vars)
-
-                loss_metric(loss-reg)
-
-                iteration += 1
-
-                # write the summary file
-                #if tf.equal(optimizer.iterations % args.log_step, 0):
-                #    tf.summary.scalar('loss', loss_metric.result(), step=optimizer.iterations)
-
-            # difference between the approximated cross entropy and the entropy
-            kl_d = loss_metric.result() - 4.59343477271186
-
-
-            print('epoch %s, iteration %s, loss = %s,  kl_d = %s, time = %s' %
-                             (i, iteration, loss_metric.result().numpy(), kl_d.numpy(), time.time()-start_time))
-
-            loss_vs_epoch += [loss_metric.result().numpy()]
-            KL_vs_epoch += [kl_d.numpy()]
-
-            loss_metric.reset_states()
-
-            # re-shuffle the dataset
-            train_dataset = data_flow.update_shuffled_batched_dataset()
-
-            ckpt.step.assign_add(1)
-            if int(ckpt.step) % args.ckpt_step == 0:
-                save_path = manager.save()
-                print("Saved checkpoint for step {}: {}".format(int(ckpt.step), save_path))
-
-            if i % args.n_draw_samples == 0:
-                xs = kr_model.draw_samples_from_prior(args.n_samples, args.n_dim)
-                ys = kr_model.mapping_from_prior(xs)
-                np.savetxt('epoch_{}_prior.dat'.format(i), xs.numpy())
-                np.savetxt('epoch_{}_sample.dat'.format(i), ys.numpy())
-
-        c1=np.array(range(1,n_epochs+1)).reshape(-1,1)
-        c2=np.array(loss_vs_epoch).reshape(-1,1)
-        c3=np.array(KL_vs_epoch).reshape(-1,1)
-        np.savetxt('cong_vs_epoch.dat',np.concatenate((c1, c2, c3), axis=1))
+                print("step", step + 1)
+                loss, g_l, d_l, reg = kr_train_step(train_batch, kr_para, g_para, d_para)
+                print(loss.numpy(), g_l.numpy(), d_l.numpy(), reg)
 
 if __name__ == '__main__':
-    from configargparse import ArgParser
-    p = ArgParser()
+    p = argparse.ArgumentParser()
     # Data arguments
-    p.add('--data_dir', type=str, help='Path to preprocessed data files.')
+    p.add_argument('--data_dir', type=str, help='Path to preprocessed data files.')
 
     # save parameters
-    p.add('--ckpts_dir', type=str, default='./pdf_ckpt', help='Path to the check points.')
-    p.add('--summary_dir', type=str, default='./kr_summary', help='Path to the summaries.')
-    p.add('--log_step', type=int, default=16, help='Record information every n optimization iterations.')
-    p.add('--ckpt_step', type=int, default=50, help='Save the model every n epochs.')
+    p.add_argument('--ckpts_dir', type=str, default='./pdf_ckpt', help='Path to the check points.')
+    p.add_argument('--summary_dir', type=str, default='./kr_summary', help='Path to the summaries.')
+    p.add_argument('--log_step', type=int, default=16, help='Record information every n optimization iterations.')
+    p.add_argument('--ckpt_step', type=int, default=50, help='Save the model every n epochs.')
 
     # Neural network hyperparameteris
-    p.add('--n_depth', type=int, default=8, help='The number of affine coupling layers.')
-    p.add('--n_width', type=int, default=32, help='The number of neurons for the hidden layers.')
-    p.add('--n_step', type=int, default=1, help='The step size for dimension reduction in each squeezing layer.')
-    p.add('--rotation', action='store_true', help='Specify rotation layers or not?')
-    p.add('--d_epoch', type=int, default=1, help='The number discriminator updates during one epoch of generator')
-    p.add('--g_epoch', type=int, default=1, help='The number generator updates during one epoch of krnet')
+    p.add_argument('--n_depth', type=int, default=8, help='The number of affine coupling layers.')
+    p.add_argument('--n_width', type=int, default=32, help='The number of neurons for the hidden layers.')
+    p.add_argument('--n_step', type=int, default=1, help='The step size for dimension reduction in each squeezing layer.')
+    p.add_argument('--rotation', action='store_true', help='Specify rotation layers or not?')
+    p.add_argument('--d_epoch', type=int, default=1, help='The number discriminator updates during one epoch of generator')
+    p.add_argument('--g_epoch', type=int, default=1, help='The number generator updates during one epoch of krnet')
     #p.set_defaults(rotation=True)
-    p.add('--n_bins4cdf', type=int, default=0, help='The number of bins for uniform partition of the support of PDF.')
-    p.add('--flow_coupling', type=int, default=1, help='Coupling type: 0=additive, 1=affine.')
-    p.add('--h1_reg', action='store_true', help='H1 regularization of the PDF.')
-    p.add('--shrink_rate', type=float, default=0.9, help='The shrinking rate of the width of NN.')
+    p.add_argument('--n_bins4cdf', type=int, default=0, help='The number of bins for uniform partition of the support of PDF.')
+    p.add_argument('--flow_coupling', type=int, default=1, help='Coupling type: 0=additive, 1=affine.')
+    p.add_argument('--h1_reg', action='store_true', help='H1 regularization of the PDF.')
+    p.add_argument('--shrink_rate', type=float, default=0.9, help='The shrinking rate of the width of NN.')
 
     #optimization hyperparams:
-    p.add("--n_dim", type=int, default=10, help='The number of random dimension.')
-    p.add("--n_train", type=int, default=10000, help='The number of samples in the training set.')
-    p.add('--batch_size', type=int, default=10000, help='Batch size of training generator.')
-    p.add("--kr_lr", type=float, default=0.001, help='Base krnet learning rate.')
-    p.add("--g_lr", type=float, default=0.0004, help='Base generator learning rate.')
-    p.add("--d_lr", type=float, default=0.0004, help='Base discriminator learning rate.')
-    p.add('--n_epochs',type=int, default=6000, help='Total number of training epochs.')
+    p.add_argument("--n_dim", type=int, default=10, help='The number of random dimension.')
+    p.add_argument("--n_train", type=int, default=100, help='The number of samples in the training set.')
+    p.add_argument('--batch_size', type=int, default=50, help='Batch size of training generator.')
+    p.add_argument("--kr_lr", type=float, default=0.001, help='Base krnet learning rate.')
+    p.add_argument("--g_lr", type=float, default=0.01, help='Base generator learning rate.')
+    p.add_argument("--d_lr", type=float, default=0.01, help='Base discriminator learning rate.')
+    p.add_argument('--n_epochs',type=int, default=6, help='Total number of training epochs.')
 
     # samples:
-    p.add("--n_samples", type=int, default=10000, help='Sample size for the trained model.')
-    p.add("--n_draw_samples", type=int, default=1000, help='Draw samples every n epochs.')
+    p.add_argument("--n_samples", type=int, default=10000, help='Sample size for the trained model.')
+    p.add_argument("--n_draw_samples", type=int, default=1000, help='Draw samples every n epochs.')
 
-    p.add("--radius", type=float, default=1.0, help='The radius of the sphere')
+    p.add_argument("--radius", type=float, default=1.0, help='The radius of the sphere')
 
     args = p.parse_args()
     main(args)
