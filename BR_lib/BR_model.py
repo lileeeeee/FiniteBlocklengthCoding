@@ -295,3 +295,9 @@ class IM_rNVP_KR_CDF(tf.keras.Model):
     # return samples from prior
     def draw_samples_from_prior(self, n_samples, n_dim):
         return tf.random.normal((n_samples, n_dim))
+
+#
+# class FiniteBlocklength(tf.keras.Modle):
+#     def __init__(self):
+#
+#
