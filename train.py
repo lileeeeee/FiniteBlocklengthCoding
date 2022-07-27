@@ -139,36 +139,71 @@ def main(args):
     d_optim = tf.keras.optimizers.Adam(learning_rate=args.d_lr)
 
     def g_metric_base(c, n_dim):
+        """
+        TV distance 解析解
+
+        c:
+
+        n_dim:
+            dimension of the data
+        """
         r_sq = n_dim * (1 + c) * np.log(1 + c) / c
         return tf.math.igamma(n_dim / 2, r_sq / 2) - tf.math.igamma(n_dim / 2, r_sq / (1 + c) / 2)
 
     def d_real_loss(real, fake):
+        """
+        calculate the expectation of
+            real + 1 - fake
+
+        :param real:
+        :param fake:
+        :return:
+        """
         return tf.reduce_mean(real) + tf.reduce_mean(1. - fake)
 
-    def g_metric(n_dim, c, n_sample=1000):
-        mean = np.zeros(n_dim)
-        var1 = np.identity(n_dim)
-        var2 = np.diag([1 + c] * n_dim)
+    def g_data(n_dim, c, n_sample=1000):
+        """
+        generate two groups of data
 
-        np.random.seed(42)
-        ori = np.random.multivariate_normal(mean, var1, n_sample)
-        contrast = np.random.multivariate_normal(mean, var2, n_sample)
+        :param n_dim:
+            dimension
+        :param c:
 
+        :param n_sample:
+            number of the data in one group
+        :return:
+            data group1, data group2
+        """
+        mean = np.zeros(n_dim)  # mean of the data
+        var1 = np.identity(n_dim)   # covariance matrix of data1
+        var2 = np.diag([1 + c] * n_dim) # covariance matrix of data2
 
-        ori = kr_model(ori)[0]
-        ori = inv_sphere_proj(ori, n_dim, n_sample, args.radius) + BR_data.gen_nd_Gaussian(n_dim + 1, n_sample)
+        np.random.seed(42)  # set random seed
+        # generate data randomly
+        ori = np.random.multivariate_normal(mean, var1, n_sample)   # data 1
+        contrast = np.random.multivariate_normal(mean, var2, n_sample) # data 2
 
-        contrast = kr_model(contrast)[0]
-        contrast = inv_sphere_proj(contrast, n_dim, n_sample, args.radius) + BR_data.gen_nd_Gaussian(n_dim + 1, n_sample)
+        return ori, contrast
 
+    ori, contrast = g_data(args.n_dim + 1, args.c)
+
+    def g_metric(ori, contrast):
+        # get the probabilities
         ori = Discriminator(ori, training=False)
         contrast = Discriminator(contrast, training=False)
 
+        # get D^
         ori = tf.where(ori < 0.5, 0., 1.)
         contrast = tf.where(contrast < 0.5, 0., 1.)
 
-        tf.print(g_metric_base(c, n_dim), d_real_loss(ori, contrast))
+        tf.print(tf.reduce_sum(ori))
+        tf.print(tf.reduce_sum(contrast))
+
+        # print calculated TVD
+        tf.print(d_real_loss(ori, contrast))
         return
+
+    metric = g_metric_base(args.c, args.n_dim)
 
     # prepare one training iteration step
     def kr_train_step(inputs, kr_para, g_para, d_para):
@@ -219,7 +254,8 @@ def main(args):
                 tf.print("fake", tf.reduce_sum(fake_ans))
                 tf.print("g_loss", g_loss)
                 g_optim.apply_gradients(zip(g_grad, g_para))    #update generator parameters
-                g_metric(args.n_dim, 0.01, 1000)
+                tf.print(metric)
+                g_metric(ori, contrast)
 
             loss, reg = get_kr_loss(x_t)    #get the loss of krnet
         tf.print("------updating krnet------")
@@ -240,48 +276,6 @@ def main(args):
             loss, g_l, d_l = kr_train_step(train_batch, kr_para, g_para, d_para)
             # loss, g_l, d_l, reg = D_step(train_batch, kr_para, g_para, d_para)
             tf.print("kr_loss =", loss,"g_l =", g_l, "d_l =", d_l)
-
-        # for step, train_batch in enumerate(train_dataset):
-        #     tf.print("step", step + 1)
-        #     tf.print(train_batch[0])
-        #     x_t = train_batch
-        #     y_t = kr_model(x_t)[0]
-        #     tf.print(y_t[0])
-        #     y_t = inv_sphere_proj(y_t, args.n_dim, x_t.shape[0], args.radius)
-        #     tf.print(y_t[0])
-        #     sample_gaussian_vector = BR_data.gen_nd_Gaussian(args.n_dim + 1, y_t.shape[0])
-        #     y_t = y_t + sample_gaussian_vector
-        #
-        #     for i in tf.range(args.g_epoch):
-        #         tf.print("------gan_step%d------"%(i + 1))
-        #         real_inputs = y_t
-        #         z = BR_data.gen_nd_Gaussian(args.n_dim, real_inputs.shape[0])
-        #         with tf.GradientTape() as g_tape:
-        #             fake_inputs = Generator(z, training=True)
-        #             fake_inputs = inv_sphere_proj(fake_inputs, args.n_dim, fake_inputs.shape[0], args.radius)
-        #             sample_gaussian_vector = BR_data.gen_nd_Gaussian(args.n_dim + 1, fake_inputs.shape[0])
-        #             fake_inputs = fake_inputs + sample_gaussian_vector
-        #
-        #             for j in tf.range(args.d_epoch):
-        #                 with tf.GradientTape() as d_tape:
-        #                     tf.print("------dis_step%s------" % (j + 1))
-        #                     fake_ans = Discriminator(fake_inputs, training=True)
-        #                     real_ans = Discriminator(real_inputs, training=True)
-        #                     # tf.print(fake_ans)
-        #                     # tf.print(real_ans)
-        #                     d_loss = get_d_loss(real_ans, fake_ans)
-        #                     tf.print("d_loss", d_loss)
-        #                     d_grad = d_tape.gradient(d_loss, d_para)
-        #                     tf.print("------updating discriminator------")
-        #                     # tf.print("g_para", g_para)
-        #                     # tf.print("d_para", d_para)
-        #                     d_optim.apply_gradients(zip(d_grad, d_para))
-        #
-        #             g_loss = get_g_loss(fake_inputs)
-        #             tf.print("g_loss", g_loss)
-        #             g_grad = g_tape.gradient(g_loss, g_para)
-        #             tf.print("------updating generator------")
-        #             g_optim.apply_gradients(zip(g_grad, g_para))
 
 
 
@@ -317,6 +311,8 @@ if __name__ == '__main__':
     p.add_argument("--g_lr", type=float, default=0.0001, help='Base generator learning rate.')
     p.add_argument("--d_lr", type=float, default=0.001, help='Base discriminator learning rate.')
     p.add_argument('--n_epochs',type=int, default=10, help='Total number of training epochs.')
+
+    p.add_argument('--c', type=float, default=0.01, help='Total number of training epochs.')
 
     # samples:
     p.add_argument("--n_samples", type=int, default=10000, help='Sample size for the trained model.')
