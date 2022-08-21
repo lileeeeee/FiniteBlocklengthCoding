@@ -312,7 +312,7 @@ def main(args):
             d_grad = d_tape.gradient(d_loss, d_para)  # calculate the gradient
             d_optim.apply_gradients(zip(d_grad, d_para))
 
-            # tf.print("d_loss", d_loss)
+            tf.print("d_loss", d_loss)
             # tf.print("train")
             train_res = d_metric(ori_train, contrast_train)
             # tf.print("test")
