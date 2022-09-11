@@ -1,10 +1,14 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
+import random
+
+from tensorflow.keras import layers
+from scipy.integrate import dblquad
 import argparse
 import math
 
 import tensorflow as tf
-from tensorflow.keras import layers
+
 import numpy as np
 import time
 import sys
@@ -338,9 +342,15 @@ def main(args):
     #             break
     #         prev_metric = train_res[0]
 
-    n_sample = 10000
-    tf.print(g_metric_base(args.c, args.n_dim))
-    ori_data = gen_g_data(args.n_dim, n_sample)
+    n_sample = 1000
+    # np.random.seed(42)
+    u_G = np.random.random(args.n_dim)
+    assert (u_G == 0).sum() != 10
+    tmp = np.random.random((args.n_dim, args.n_dim))
+    tmp = np.dot(tmp, tmp.transpose())
+    sig_G = tmp + tmp.T
+
+    ori_data = np.random.multivariate_normal(u_G, sig_G, n_sample)
     data = tf.data.Dataset.from_tensor_slices(ori_data).batch(args.batch_size)
     """Train Generator"""
     for i in tf.range(args.g_epoch):
@@ -352,8 +362,8 @@ def main(args):
             with tf.GradientTape() as g_tape:
                 """generate fake data"""
                 input_data = Generator(stochastic_input, training=True)
-                sphPoints = inv_sphere_proj(input_data, args.n_dim - 1, args.batch_size, math.sqrt(10))
-                fake_data = sphPoints + gen_n_dim_gaussian(args.n_dim, 1 + args.c, args.batch_size)
+                sphPoints = inv_sphere_proj(input_data, args.n_dim - 1, args.batch_size, math.sqrt((u_G * u_G).sum()))
+                fake_data = sphPoints + np.random.multivariate_normal(np.zeros(args.n_dim), (args.c + 1) * sig_G, args.batch_size)
 
                 prev_metric = tf.constant(1000.)
                 for j in tf.range(args.d_epoch):
@@ -388,42 +398,87 @@ def main(args):
             g_optim.apply_gradients(zip(g_grad, g_para))    #update generator parameters
 
         # g_metric(ori, contrast)
-    Generator.save("model/c="+ str(args.c) +"epoch=" + str(args.g_epoch) + "train=10000/generator.h5")
-    Discriminator.save("model/c="+ str(args.c) +"epoch=" + str(args.g_epoch) + "train=10000/discriminator.h5")
-    # """Test Generator"""
-    # tf.print("------------------Test-starts----------------------------")
-    # prev_metric = tf.constant(1000.)
-    # test_data = gen_g_data(args.n_dim, n_sample)
-    # gen_data = gen_n_dim_gaussian(args.n_dim, 1, n_sample)
-    # input_data = Generator(gen_data)
-    # sphPoints = inv_sphere_proj(input_data, args.n_dim - 1, n_sample, math.sqrt(10))
-    # fake_test_data = sphPoints + gen_n_dim_gaussian(args.n_dim, 2, n_sample)
-    # tf.print()
-    # for i in tf.range(args.d_epoch):
-    #     tf.print("---d_step :", i + 1, "---")
-    #     with tf.GradientTape() as d_tape:
-    #         """discriminator step"""
-    #         real_ans = Discriminator(test_data, training=True)
-    #         fake_ans = Discriminator(fake_test_data, training=True)
-    #
-    #         tf.print("real", tf.reduce_sum(real_ans))
-    #         tf.print("fake", tf.reduce_sum(fake_ans))
-    #
-    #         d_loss = get_d_loss(real_ans, fake_ans)  # get the loss of discriminator
-    #     d_grad = d_tape.gradient(d_loss, d_para)  # calculate the gradient
-    #     d_optim.apply_gradients(zip(d_grad, d_para))
-    #
-    #     tf.print("d_loss", d_loss)
-    #     # tf.print("train")
-    #     train_res = d_metric(ori_data, fake_test_data)
-    #     # tf.print("test")
-    #     # test_metric,_ = d_metric(ori_test, contrast_test)
-    #     tf.print("TVD-cal",train_res)
-    #     # tf.print("")
-    #     if (tf.abs((train_res - prev_metric)) < 1e-4):
-    #         tf.print(train_res)
-    #         break
-    #     prev_metric = train_res
+    # Generator.save("model2/generator.h5")
+    # Discriminator.save("model2/discriminator.h5")
+
+    def test_d_metric(discrim, ori, contrast):
+        # get the probabilities
+        ori = discrim(ori, training=False)
+        contrast = discrim(contrast, training=False)
+
+        # get D^
+        ori = tf.where(ori < 0.5, 0., 1.)
+        contrast = tf.where(contrast < 0.5, 0., 1.)
+
+        # tf.print("true-positive", tf.reduce_sum(ori))
+        # tf.print("false-positive", tf.reduce_sum(contrast))
+
+        # print calculated TVD
+        a = d_real_loss(ori, contrast) - 1
+        # tf.print("TVD-ori", metric, "TVD-cal", a, "delta", tf.abs(metric - a))
+        return a
+
+    def gauss(x, sigma):
+        return np.exp(-np.dot(np.dot(x, np.linalg.inv(sigma)), x) / 2) / (2 * np.pi) / np.sqrt(np.linalg.det(sigma))
+
+    def cal_numerical_TVD(sigma, i, j, c):
+        sig = np.array([[sigma[i][i], sigma[i][j]], [sigma[j][i], sigma[j][j]]])
+        val, err = dblquad(lambda y, x: np.abs(gauss(np.array([x, y]), sig) - gauss(np.array([x, y]), c * sig)) / 2,
+                           -np.inf, np.inf, -np.inf, np.inf)
+        return val
+
+
+
+    """Test Generator"""
+    test_sample = 10000
+
+    for x in range(5):
+        dim_1 = random.randint(0, 9)
+        dim_2 = random.randint(0, 9)
+        while dim_1 == dim_2:
+            dim_2 = random.randint(0, 9)
+        TVD_num = cal_numerical_TVD(sig_G, dim_1, dim_2, args.c + 1)
+        tf.print("trial", x, "dim", dim_1, dim_2, "TVD", TVD_num)
+        for i in tf.range(30):
+            # tf.print("------------------Test-", i, "-starts----------------------------")
+            prev_metric = tf.constant(1000.)
+            """test_data"""
+            test_data = np.random.multivariate_normal(u_G, sig_G, test_sample)
+
+            test_data = tf.concat([test_data[:, dim_1:dim_1 + 1], test_data[:, dim_2:dim_2 + 1]], 1)
+            """fake_test_data"""
+            gen_data = gen_n_dim_gaussian(args.n_dim, 1, test_sample)
+            input_data = Generator(gen_data)
+            sphPoints = inv_sphere_proj(input_data, args.n_dim - 1, test_sample, math.sqrt((u_G * u_G).sum()))
+            fake_test_data = sphPoints + np.random.multivariate_normal(np.zeros(args.n_dim), (args.c + 1) * sig_G, test_sample)
+            fake_test_data = tf.concat([fake_test_data[:, dim_1:dim_1 + 1], fake_test_data[:, dim_2:dim_2 + 1]], 1)
+            test_Dis = make_discriminator((2,))
+            test_d_para = test_Dis.trainable_variables
+            for j in tf.range(args.d_epoch):
+                # tf.print("---d_step :", j + 1, "---")
+                with tf.GradientTape() as d_tape:
+                    """discriminator step"""
+                    real_ans = test_Dis(test_data, training=True)
+                    fake_ans = test_Dis(fake_test_data, training=True)
+
+                    # tf.print("real", tf.reduce_sum(real_ans))
+                    # tf.print("fake", tf.reduce_sum(fake_ans))
+
+                    d_loss = get_d_loss(real_ans, fake_ans)  # get the loss of discriminator
+                d_grad = d_tape.gradient(d_loss, test_d_para)  # calculate the gradient
+                d_optim.apply_gradients(zip(d_grad, test_d_para))
+
+                # tf.print("d_loss", d_loss)
+                # tf.print("train")
+                train_res = test_d_metric(test_Dis, test_data, fake_test_data)
+                # tf.print("test")
+                # test_metric,_ = d_metric(ori_test, contrast_test)
+                # tf.print("TVD-cal",train_res)
+                # tf.print("")
+                if (tf.abs((train_res - prev_metric)) < 1e-4):
+                    tf.print((train_res - TVD_num) / TVD_num)
+                    break
+                prev_metric = train_res
 
 
 
@@ -461,7 +516,7 @@ if __name__ == '__main__':
     p.add_argument("--d_lr", type=float, default=0.001, help='Base discriminator learning rate.')
     p.add_argument('--n_epochs',type=int, default=10, help='Total number of training epochs.')
 
-    p.add_argument('--c', type=float, default=10, help='The covariance is (1+c)*I')
+    p.add_argument('--c', type=float, default=1, help='Total number of training epochs.')
 
     # samples:
     p.add_argument("--n_samples", type=int, default=10000, help='Sample size for the trained model.')

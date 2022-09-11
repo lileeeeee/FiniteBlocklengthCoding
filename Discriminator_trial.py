@@ -63,8 +63,8 @@ def main(args):
             layers.LeakyReLU(0.8),
             layers.Dense(256, activation=None),
             layers.LeakyReLU(0.8),
-            # layers.Dense(256, activation=None),
-            # layers.LeakyReLU(0.8),
+            layers.Dense(256, activation=None),
+            layers.LeakyReLU(0.8),
             layers.Dense(256, activation=None),
             layers.LeakyReLU(0.8),
             layers.Dense(64, activation=None),
@@ -171,7 +171,7 @@ def main(args):
         """
         return tf.reduce_mean(real) + tf.reduce_mean(1. - fake)
 
-    def g_data(n_dim, c, n_sample=100000):
+    def g_data(n_dim, c, n_sample=10000):
         """
         generate two groups of data
 
@@ -200,7 +200,7 @@ def main(args):
 
         return ori_train, contrast_train, ori_test, contrast_test
 
-    def gen_n_dim_gaussian(n_dim, lam = 1, n_sample = 100000):
+    def gen_n_dim_gaussian(n_dim, lam = 1, n_sample = 10000):
         mean = np.zeros(n_dim)
         var = np.identity(n_dim)
 
@@ -304,126 +304,127 @@ def main(args):
     #         # loss, g_l, d_l, reg = D_step(train_batch, kr_para, g_para, d_para)
     #         tf.print("kr_loss =", loss,"g_l =", g_l, "d_l =", d_l)
 
-    # tf.print(metric)
-    # for l in range(300):
-    #     ori_train, contrast_train, ori_test, contrast_test = g_data(args.n_dim + 1, args.c)
-    #     Discriminator = make_discriminator((args.n_dim + 1,))
-    #     d_para = Discriminator.trainable_variables
-    #     prev_metric = tf.constant(1000.)
-    #     for i in tf.range(args.d_epoch):
-    #         # tf.print("d_step :", i)
-    #         with tf.GradientTape() as d_tape:
-    #             """discriminator step"""
-    #             real_ans = Discriminator(ori_train, training=True)
-    #             fake_ans = Discriminator(contrast_train, training=True)
-    #             # real = tf.where(real_ans < 0.5, 0., 1.)
-    #             # fake = tf.where(fake_ans < 0.5, 0., 1.)
-    #             #
-    #             # tf.print(tf.reduce_sum(real))
-    #             # tf.print(tf.reduce_sum(fake))
-    #             d_loss = get_d_loss(real_ans, fake_ans)  # get the loss of discriminator
-    #         d_grad = d_tape.gradient(d_loss, d_para)  # calculate the gradient
-    #         d_optim.apply_gradients(zip(d_grad, d_para))
+    tf.print(metric)
+    for l in range(30):
+        ori_train, contrast_train, ori_test, contrast_test = g_data(args.n_dim + 1, args.c, 10000)
+        Discriminator = make_discriminator((args.n_dim + 1,))
+        d_para = Discriminator.trainable_variables
+        prev_metric = tf.constant(1000.)
+        for i in tf.range(args.d_epoch):
+            # tf.print("d_step :", i)
+            with tf.GradientTape() as d_tape:
+                """discriminator step"""
+                real_ans = Discriminator(ori_train, training=True)
+                fake_ans = Discriminator(contrast_train, training=True)
+                # real = tf.where(real_ans < 0.5, 0., 1.)
+                # fake = tf.where(fake_ans < 0.5, 0., 1.)
+                #
+                # tf.print(tf.reduce_sum(real))
+                # tf.print(tf.reduce_sum(fake))
+                d_loss = get_d_loss(real_ans, fake_ans)  # get the loss of discriminator
+            d_grad = d_tape.gradient(d_loss, d_para)  # calculate the gradient
+            d_optim.apply_gradients(zip(d_grad, d_para))
+
+            # tf.print("d_loss", d_loss)
+            # tf.print("train")
+            train_res = d_metric(ori_train, contrast_train)
+            # tf.print("test")
+            # test_metric,_ = d_metric(ori_test, contrast_test)
+            # tf.print(tf.abs(train_metric - prev_metric))
+            # tf.print("")
+            # tf.print(train_res)
+            if (tf.abs((train_res - prev_metric)) < 1e-4):
+                test_res= d_metric(ori_test, contrast_test)
+                tf.print((test_res - metric) / metric)
+                break
+            prev_metric = train_res
+
+    # n_sample = 1000
+    # tf.print(g_metric_base(1, args.n_dim))
+    # ori_data = gen_g_data(args.n_dim, n_sample)
+    # data = tf.data.Dataset.from_tensor_slices(ori_data).batch(args.batch_size)
+    # """Train Generator"""
+    # for i in tf.range(args.g_epoch):
+    #     tf.print("------gan_step",i + 1,"------")
+    #     for step, ori_batch_data in enumerate(data):
+    #         tf.print("-----gan batch", step + 1, "-----")
+    #         stochastic_input = gen_n_dim_gaussian(args.n_dim, 1, args.batch_size) #stochastic input
     #
-    #         # tf.print("d_loss", d_loss)
-    #         # tf.print("train")
-    #         train_res = d_metric(ori_train, contrast_train)
-    #         # tf.print("test")
-    #         # test_metric,_ = d_metric(ori_test, contrast_test)
-    #         # tf.print(tf.abs(train_metric - prev_metric))
-    #         # tf.print("")
-    #         if (tf.abs((train_res[0] - prev_metric)) < 1e-5):
-    #             test_res= d_metric(ori_test, contrast_test)
-    #             tf.print(test_res[0], test_res[1])
-    #             break
-    #         prev_metric = train_res[0]
-
-    n_sample = 10000
-    tf.print(g_metric_base(args.c, args.n_dim))
-    ori_data = gen_g_data(args.n_dim, n_sample)
-    data = tf.data.Dataset.from_tensor_slices(ori_data).batch(args.batch_size)
-    """Train Generator"""
-    for i in tf.range(args.g_epoch):
-        tf.print("------gan_step",i + 1,"------")
-        for step, ori_batch_data in enumerate(data):
-            tf.print("-----gan batch", step + 1, "-----")
-            stochastic_input = gen_n_dim_gaussian(args.n_dim, 1, args.batch_size) #stochastic input
-
-            with tf.GradientTape() as g_tape:
-                """generate fake data"""
-                input_data = Generator(stochastic_input, training=True)
-                sphPoints = inv_sphere_proj(input_data, args.n_dim - 1, args.batch_size, math.sqrt(10))
-                fake_data = sphPoints + gen_n_dim_gaussian(args.n_dim, 1 + args.c, args.batch_size)
-
-                prev_metric = tf.constant(1000.)
-                for j in tf.range(args.d_epoch):
-                    tf.print("---d_step :", j + 1, "---")
-                    with tf.GradientTape() as d_tape:
-                        """discriminator step"""
-                        real_ans = Discriminator(ori_batch_data, training=True)
-                        fake_ans = Discriminator(fake_data, training=True)
-
-                        # tf.print("real", tf.reduce_sum(real_ans))
-                        # tf.print("fake", tf.reduce_sum(fake_ans))
-
-                        d_loss = get_d_loss(real_ans, fake_ans)  # get the loss of discriminator
-                    d_grad = d_tape.gradient(d_loss, d_para)  # calculate the gradient
-                    d_optim.apply_gradients(zip(d_grad, d_para))
-
-                    # tf.print("d_loss", d_loss)
-                    # tf.print("train")
-                    train_res = d_metric(ori_batch_data, fake_data)
-                    # tf.print("test")
-                    # test_metric,_ = d_metric(ori_test, contrast_test)
-                    tf.print("TVD-cal",train_res)
-                    # tf.print("")
-                    if (tf.abs((train_res - prev_metric)) < 1e-4):
-                        tf.print("TVD-cal res:", train_res)
-                        break
-                    prev_metric = train_res
-                g_loss = get_g_loss(fake_ans)    #get the loss of generator
-            g_grad = g_tape.gradient(g_loss, g_para)    #calculate the gradient
-            tf.print("------updating generator", step + 1, "------")
-            tf.print("g_loss", g_loss)
-            g_optim.apply_gradients(zip(g_grad, g_para))    #update generator parameters
-
-        # g_metric(ori, contrast)
-    Generator.save("model/c="+ str(args.c) +"epoch=" + str(args.g_epoch) + "train=10000/generator.h5")
-    Discriminator.save("model/c="+ str(args.c) +"epoch=" + str(args.g_epoch) + "train=10000/discriminator.h5")
-    # """Test Generator"""
-    # tf.print("------------------Test-starts----------------------------")
-    # prev_metric = tf.constant(1000.)
-    # test_data = gen_g_data(args.n_dim, n_sample)
-    # gen_data = gen_n_dim_gaussian(args.n_dim, 1, n_sample)
-    # input_data = Generator(gen_data)
-    # sphPoints = inv_sphere_proj(input_data, args.n_dim - 1, n_sample, math.sqrt(10))
-    # fake_test_data = sphPoints + gen_n_dim_gaussian(args.n_dim, 2, n_sample)
-    # tf.print()
-    # for i in tf.range(args.d_epoch):
-    #     tf.print("---d_step :", i + 1, "---")
-    #     with tf.GradientTape() as d_tape:
-    #         """discriminator step"""
-    #         real_ans = Discriminator(test_data, training=True)
-    #         fake_ans = Discriminator(fake_test_data, training=True)
+    #         with tf.GradientTape() as g_tape:
+    #             """generate fake data"""
+    #             input_data = Generator(stochastic_input, training=True)
+    #             sphPoints = inv_sphere_proj(input_data, args.n_dim - 1, args.batch_size, math.sqrt(10))
+    #             fake_data = sphPoints + gen_n_dim_gaussian(args.n_dim, 2, args.batch_size)
     #
-    #         tf.print("real", tf.reduce_sum(real_ans))
-    #         tf.print("fake", tf.reduce_sum(fake_ans))
+    #             prev_metric = tf.constant(1000.)
+    #             for j in tf.range(args.d_epoch):
+    #                 tf.print("---d_step :", j + 1, "---")
+    #                 with tf.GradientTape() as d_tape:
+    #                     """discriminator step"""
+    #                     real_ans = Discriminator(ori_batch_data, training=True)
+    #                     fake_ans = Discriminator(fake_data, training=True)
     #
-    #         d_loss = get_d_loss(real_ans, fake_ans)  # get the loss of discriminator
-    #     d_grad = d_tape.gradient(d_loss, d_para)  # calculate the gradient
-    #     d_optim.apply_gradients(zip(d_grad, d_para))
+    #                     # tf.print("real", tf.reduce_sum(real_ans))
+    #                     # tf.print("fake", tf.reduce_sum(fake_ans))
     #
-    #     tf.print("d_loss", d_loss)
-    #     # tf.print("train")
-    #     train_res = d_metric(ori_data, fake_test_data)
-    #     # tf.print("test")
-    #     # test_metric,_ = d_metric(ori_test, contrast_test)
-    #     tf.print("TVD-cal",train_res)
-    #     # tf.print("")
-    #     if (tf.abs((train_res - prev_metric)) < 1e-4):
-    #         tf.print(train_res)
-    #         break
-    #     prev_metric = train_res
+    #                     d_loss = get_d_loss(real_ans, fake_ans)  # get the loss of discriminator
+    #                 d_grad = d_tape.gradient(d_loss, d_para)  # calculate the gradient
+    #                 d_optim.apply_gradients(zip(d_grad, d_para))
+    #
+    #                 # tf.print("d_loss", d_loss)
+    #                 # tf.print("train")
+    #                 train_res = d_metric(ori_batch_data, fake_data)
+    #                 # tf.print("test")
+    #                 # test_metric,_ = d_metric(ori_test, contrast_test)
+    #                 tf.print("TVD-cal",train_res)
+    #                 # tf.print("")
+    #                 if (tf.abs((train_res - prev_metric)) < 1e-4):
+    #                     tf.print("TVD-cal res:", train_res)
+    #                     break
+    #                 prev_metric = train_res
+    #             g_loss = get_g_loss(fake_ans)    #get the loss of generator
+    #         g_grad = g_tape.gradient(g_loss, g_para)    #calculate the gradient
+    #         tf.print("------updating generator", step + 1, "------")
+    #         tf.print("g_loss", g_loss)
+    #         g_optim.apply_gradients(zip(g_grad, g_para))    #update generator parameters
+    #
+    #     # g_metric(ori, contrast)
+    # Generator.save("model/generator.h5")
+    # Discriminator.save("model/discriminator.h5")
+    # # """Test Generator"""
+    # # tf.print("------------------Test-starts----------------------------")
+    # # prev_metric = tf.constant(1000.)
+    # # test_data = gen_g_data(args.n_dim, n_sample)
+    # # gen_data = gen_n_dim_gaussian(args.n_dim, 1, n_sample)
+    # # input_data = Generator(gen_data)
+    # # sphPoints = inv_sphere_proj(input_data, args.n_dim - 1, n_sample, math.sqrt(10))
+    # # fake_test_data = sphPoints + gen_n_dim_gaussian(args.n_dim, 2, n_sample)
+    # # tf.print()
+    # # for i in tf.range(args.d_epoch):
+    # #     tf.print("---d_step :", i + 1, "---")
+    # #     with tf.GradientTape() as d_tape:
+    # #         """discriminator step"""
+    # #         real_ans = Discriminator(test_data, training=True)
+    # #         fake_ans = Discriminator(fake_test_data, training=True)
+    # #
+    # #         tf.print("real", tf.reduce_sum(real_ans))
+    # #         tf.print("fake", tf.reduce_sum(fake_ans))
+    # #
+    # #         d_loss = get_d_loss(real_ans, fake_ans)  # get the loss of discriminator
+    # #     d_grad = d_tape.gradient(d_loss, d_para)  # calculate the gradient
+    # #     d_optim.apply_gradients(zip(d_grad, d_para))
+    # #
+    # #     tf.print("d_loss", d_loss)
+    # #     # tf.print("train")
+    # #     train_res = d_metric(ori_data, fake_test_data)
+    # #     # tf.print("test")
+    # #     # test_metric,_ = d_metric(ori_test, contrast_test)
+    # #     tf.print("TVD-cal",train_res)
+    # #     # tf.print("")
+    # #     if (tf.abs((train_res - prev_metric)) < 1e-4):
+    # #         tf.print(train_res)
+    # #         break
+    # #     prev_metric = train_res
 
 
 
@@ -445,7 +446,7 @@ if __name__ == '__main__':
     p.add_argument('--n_step', type=int, default=1, help='The step size for dimension reduction in each squeezing layer.')
     p.add_argument('--rotation', action='store_true', help='Specify rotation layers or not?')
     p.add_argument('--d_epoch', type=int, default=5000, help='The number discriminator updates during one epoch of generator')
-    p.add_argument('--g_epoch', type=int, default=15, help='The number generator updates during one epoch of krnet')
+    p.add_argument('--g_epoch', type=int, default=10, help='The number generator updates during one epoch of krnet')
     #p.set_defaults(rotation=True)
     p.add_argument('--n_bins4cdf', type=int, default=0, help='The number of bins for uniform partition of the support of PDF.')
     p.add_argument('--flow_coupling', type=int, default=1, help='Coupling type: 0=additive, 1=affine.')
@@ -461,7 +462,7 @@ if __name__ == '__main__':
     p.add_argument("--d_lr", type=float, default=0.001, help='Base discriminator learning rate.')
     p.add_argument('--n_epochs',type=int, default=10, help='Total number of training epochs.')
 
-    p.add_argument('--c', type=float, default=10, help='The covariance is (1+c)*I')
+    p.add_argument('--c', type=float, default=0.5, help='Total number of training epochs.')
 
     # samples:
     p.add_argument("--n_samples", type=int, default=10000, help='Sample size for the trained model.')
